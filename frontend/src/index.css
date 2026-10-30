@@ -1,0 +1,14 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #e8edf5;
+  background: #111827;
+  line-height: 1.5;
+}
+
+body { margin: 0; }
+main { max-width: 48rem; margin: 5rem auto; padding: 0 1.5rem; }
+h1 { font-size: 3rem; margin-bottom: 0.5rem; }
+.connection { padding: 1rem; border: 1px solid currentColor; border-radius: 0.5rem; }
+.checking { color: #cbd5e1; }
+.connected { color: #86efac; }
+.disconnected { color: #fda4af; }
