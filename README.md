@@ -1,6 +1,6 @@
 # GameVault
 
-A portfolio video game collection application. **Milestone 1 only:** development scaffolding and a backend connectivity check. Authentication, searches, and collection features are intentionally deferred.
+A portfolio video game collection application with development scaffolding, a backend connectivity check, and a read-only IGDB game search API. User authentication and collection features are deferred.
 
 ## Prerequisites
 
@@ -108,3 +108,65 @@ docker compose down
 ```
 
 `down` preserves database data. PostgreSQL initialization variables only apply to an empty volume; changing the password in `.env` does not change an existing database user's password. To intentionally reset all local database data, use `docker compose down -v` and start again. **This deletes the stored database.**
+
+
+## Read-only IGDB search
+
+Register a confidential Twitch application and obtain its client ID and secret, following the [IGDB setup instructions](https://api-docs.igdb.com/#account-creation). Add these to your ignored root `.env`, or export them into the backend process environment:
+
+```dotenv
+IGDB_CLIENT_ID=
+IGDB_CLIENT_SECRET=
+```
+
+Fill in your own values and restart the backend. Keep both values on the backend; never add them to a `VITE_` variable. No credentials are needed to run the mocked tests or health endpoint. Missing or rejected credentials make search return a safe 502 response.
+
+Start PostgreSQL and the backend as described above, then run:
+
+```bash
+curl --get 'http://localhost:8080/api/games/search' --data-urlencode 'q=Skyrim'
+```
+
+The response is an array of at most ten games. An illustrative result is:
+
+```json
+[
+  {
+    "id": 1942,
+    "name": "The Elder Scrolls V: Skyrim",
+    "platforms": ["PC (Microsoft Windows)"],
+    "coverUrl": "https://images.igdb.com/igdb/image/upload/t_thumb/example.jpg",
+    "firstReleaseDate": 1320969600
+  }
+]
+```
+
+No matches return `[]`. Missing platforms become `[]`; missing covers and release times become `null`. Release timestamps are Unix seconds, not JavaScript milliseconds. Protocol-relative IGDB cover URLs are normalized to HTTPS.
+
+Missing, blank, overlong (more than 200 characters), or control-character queries return HTTP 400 with `{"code":"INVALID_SEARCH_QUERY","message":"..."}`. Surrounding whitespace is removed. Authentication, upstream HTTP errors, invalid responses, and network failures return HTTP 502 with `{"code":"GAME_SEARCH_UNAVAILABLE","message":"Game search is temporarily unavailable. Please try again later."}`. Upstream error bodies and credentials are never returned.
+
+### New backend classes
+
+- `games/GameSearchController`: validates `q`, trims surrounding whitespace, and delegates the GET request to the integration service.
+- `games/GameSearchResult`: public response DTO with camelCase JSON properties and platform names suitable for React.
+- `games/GameSearchExceptionHandler`: maps validation and integration failures into predictable JSON errors. Its nested `ApiError` record defines that error DTO.
+- `igdb/IgdbConfig`: configures a synchronous Spring `RestClient` with a five-second connection timeout and ten-second read timeout, plus a UTC clock for token expiry.
+- `igdb/TwitchTokenProvider`: sends form-encoded client credentials to Twitch and caches the access token in memory. Its nested `TokenResponse` record maps Twitch JSON. A synchronized refresh prevents simultaneous requests from acquiring duplicate tokens. Tokens refresh 60 seconds early (or halfway through very short lifetimes).
+- `igdb/IgdbSearchService`: escapes backslashes and quotes in the search term, requests the five required fields with a fixed limit of ten, and maps IGDB results. A 401 invalidates the rejected token and retries once with a fresh token; other failures are not retried.
+- `igdb/IgdbGame`: upstream DTO with nested `Platform` and `Cover` records; maps IGDB's snake_case release field and optional metadata into the public DTO.
+- `igdb/IgdbException`: a sanitized integration failure without an upstream response body or sensitive cause.
+
+The request flow is controller → search service → token provider / IGDB → response DTO. Tokens live only in this backend process and are reacquired after restart. No database persistence, frontend changes, additional dependencies, or user login are involved. The existing CORS configuration already permits GET requests to `/api/**` from Vite.
+
+### Search tests
+
+```bash
+cd backend
+./mvnw -Dtest=GameSearchIntegrationTest test
+# Or run all tests and build the executable JAR:
+./mvnw clean verify
+```
+
+`GameSearchIntegrationTest` uses MockMvc with the real controller, service, token provider, and error handler, backed by `MockRestServiceServer`. It verifies outbound HTTP requests without contacting Twitch or IGDB. A controllable clock tests expiry without sleeping. Coverage includes result mapping, missing metadata, token reuse and refresh, 401 retry, query escaping, invalid queries, missing credentials, and sanitized HTTP/network/malformed-response failures. No PostgreSQL or real IGDB credentials are required for these tests.
+
+Protocol references: [IGDB API](https://api-docs.igdb.com/) and [Twitch client credentials](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#client-credentials-grant-flow).
